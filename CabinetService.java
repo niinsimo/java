@@ -29,13 +29,6 @@ import java.util.Date;
 import java.util.List;
 import java.util.Optional;
 
-
-/**
- * Cabinet service.
- *
- * @author Roman Solomatin
- * @author Andres-Johan Oja
- */
 @Service
 public class CabinetService {
 
@@ -54,10 +47,6 @@ public class CabinetService {
     private final OrderRepository orderRepository;
     private final CabinetLogRepository cabinetLogRepository;
 
-
-    /**
-     * Class logger.
-     */
     private static final Logger log = LoggerFactory.getLogger(CabinetService.class);
 
     @Autowired
@@ -80,22 +69,6 @@ public class CabinetService {
         this.routeVersionCabinetsRepository = routeVersionCabinetsRepository;
         this.orderRepository = orderRepository;
         this.cabinetLogRepository = cabinetLogRepository;
-    }
-
-    public void getTerminals() {
-        SpTerminalsResponse terminalsResponse = strongPointService.getTerminals();
-        for (SpTerminal terminal : terminalsResponse.getTerminals()) {
-            Cabinet cabinet = cabinetRepository.findOneByExternalId(terminal.getTerminalId());
-            cabinet = StrongpointDeliveryFactory.createCabinet(cabinet, terminal);
-            cabinet = cabinetRepository.save(cabinet);
-
-            SpTerminalResponse terminalResponse = strongPointService.getTerminal(terminal.getTerminalId());
-            for (SpBox box : terminalResponse.getBoxes()) {
-                Locker locker = lockerRepository.findOneByExternalId(box.getGuid());
-                locker = StrongpointDeliveryFactory.createLocker(locker, box, cabinet.getId());
-                lockerRepository.save(locker);
-            }
-        }
     }
 
     public Iterable<Cabinet> getCabinets() {
@@ -194,69 +167,6 @@ public class CabinetService {
 
     public Cabinet getCabinetById(Long id) {
         return cabinetRepository.findOneById(id);
-    }
-
-    public void storeOrder(Order order) {
-        try {
-            SpOrder spOrder = StrongpointDeliveryFactory.createSpOrder(order);
-            strongPointService.sendOrder(spOrder);
-        } catch (Exception e) {
-            log.error("Could not send info to StrongPoint. Order nr: {}. Error: {}", order.getNumber(), e.getMessage());
-        }
-    }
-
-    public List<TimeSlotsPerDay> getTimeSlotsForPeriod(Long cabinetId, int period) {
-        Long deliveryDate = DateTimeUtil.currentDate();
-        List<TimeSlotConfig> timeSlotList = timeSlotConfigRepository.findAllByCabinetIdOrderByStartTime(cabinetId);
-
-        List<TimeSlotsPerDay> timeSlotsForWeek = new ArrayList<>();
-        for (int currentDayIndex = 0; currentDayIndex < period; currentDayIndex++) {
-            TimeSlotsPerDay timeSlotsForTheDay = new TimeSlotsPerDay();
-            timeSlotsForTheDay.setDate(deliveryDate);
-            timeSlotsForTheDay.setTimeSlots(getTimeSlotsForDay(deliveryDate, timeSlotList));
-
-            timeSlotsForWeek.add(timeSlotsForTheDay);
-            deliveryDate = DateTimeUtil.addDays(deliveryDate, 1);
-        }
-        return timeSlotsForWeek;
-    }
-
-    public boolean isTimeSlotValidByRoute(TimeSlotConfig timeslot, Long deliveryDate) {
-        RouteVersion routeVersion = routeVersionRepository.findOneById(timeslot.getRouteVersionId());
-        if (routeVersion.getValidFrom() <= deliveryDate && routeVersion.getValidUntil() == null ||
-                routeVersion.getValidFrom() <= deliveryDate && routeVersion.getValidUntil() >= deliveryDate) {
-            return true;
-        }
-        return false;
-    }
-
-    public List<TimeSlotInstance> getTimeSlotsForDay(Long deliveryDate, List<TimeSlotConfig> timeSlotList) {
-        List<TimeSlotInstance> timeSlots = new ArrayList<>();
-        for (TimeSlotConfig timeSlot : timeSlotList) {
-            TimeSlotInstance timeSlotInstance = new TimeSlotInstance();
-            timeSlotInstance.setTimeSlotConfigId(timeSlot.getId());
-            timeSlotInstance.setDeliveryFee(timeSlot.getDeliveryFee());
-            timeSlotInstance.setStartTime(timeSlot.getStartTime());
-            timeSlotInstance.setEndTime(timeSlot.getEndTime());
-            timeSlotInstance.setStatus(getTimeSlotStatus(timeSlot, deliveryDate));
-
-            timeSlots.add(timeSlotInstance);
-        }
-        return timeSlots;
-    }
-
-    private String getTimeSlotStatus(TimeSlotConfig timeSlot, Long deliveryDate) {
-        Long currentDate = DateTimeUtil.currentDate();
-        Long currentTime = DateTimeUtil.currentTime();
-        Long deliveryCount = deliveryRepository.findDeliveryCountForDateAndTimeSlot(DateTimeUtil.resetTime(deliveryDate), timeSlot.getId());
-
-        if (DateTimeUtil.resetTime(deliveryDate).equals(currentDate) && timeSlot.getPickingStartsAt() < currentTime && !isTimeSlotValidByRoute(timeSlot, DateTimeUtil.resetTime(deliveryDate))) {
-            return ECoop.TIME_SLOT_STATUS_UNAVAILABLE;
-        } else if (deliveryCount >= timeSlot.getMaxOrders() || currentTime > timeSlot.getPickingStartsAt() && DateTimeUtil.resetTime(deliveryDate) <= currentDate) {
-            return ECoop.TIME_SLOT_STATUS_UNAVAILABLE;
-        } else {
-            return ECoop.TIME_SLOT_STATUS_AVAILABLE;
-        }
     }
 
     public void deleteCabinet(Long id) {
@@ -377,16 +287,6 @@ public class CabinetService {
         return log;
     }
 
-    public List<Cabinet> getUserCabinets(Long userId) {
-        List<UserCabinet> userCabinets = userCabinetRepository.findAllByUserId(userId);
-        List<Cabinet> cabinets = new ArrayList<>();
-        for (UserCabinet userCabinet : userCabinets) {
-            Cabinet cabinet = cabinetRepository.findOneById(userCabinet.getCabinetId());
-            cabinets.add(cabinet);
-        }
-        return cabinets;
-    }
-
     public Cabinet updateCabinet(Cabinet cabinet, Long id) {
         Cabinet cabinetById = getCabinetById(id);
         cabinetById.setName(cabinet.getName());
@@ -401,78 +301,5 @@ public class CabinetService {
         return cabinetRepository.save(cabinetById);
     }
 
-    @Scheduled(cron = "${backend.cron.delivery-renew}")
-    private void updateOverTimeOrdersInCabinets() {
-        List<Delivery> overTimeDeliveries = deliveryRepository.findOverTimeDeliveries(System.currentTimeMillis());
-        Long today = DateTimeUtil.currentDate();
-        Long now = DateTimeUtil.currentTime();
-        for (Delivery overtimeDelivery : overTimeDeliveries) {
-            Order orderByDeliveryId = orderRepository.findByDeliveryId(overtimeDelivery.getId());
-            List<TimeSlotConfig> timeSlotList = timeSlotConfigRepository.findAllByCabinetIdOrderByStartTime(overtimeDelivery.getCabinet().getId());
-            List<TimeSlotInstance> timeSlotsForDay = getTimeSlotsForDay(today, timeSlotList);
-            for (TimeSlotInstance timeSlotInstance : timeSlotsForDay) {
-                // find next time slot
-                if (timeSlotInstance.getStartTime() < now) {
-                    continue;
-                }
-                // update only if the time slot is available
-                if (ECoop.TIME_SLOT_STATUS_AVAILABLE.equals(timeSlotInstance.getStatus())) {
-                    Delivery delivery = orderByDeliveryId.getDelivery();
-                    delivery.setHandoverFrom(today + timeSlotInstance.getStartTime());
-                    delivery.setHandoverTo(today + timeSlotInstance.getEndTime());
-                    delivery = deliveryRepository.save(delivery);
-                    orderByDeliveryId.setDelivery(delivery);
-                    storeOrder(orderByDeliveryId);
-                    log.info("Order {} new time slot is {} - {}", orderByDeliveryId.getNumber(), new Date(delivery.getHandoverFrom()), new Date(delivery.getHandoverTo()));
-                }
-                break;
-            }
-        }
-    }
-
-
-    public List<CabinetLogRow> getCabinetLogs(Long startTime, Long endTime, Long cabinetId, Integer type) {
-        //List<CabinetLog> cabinetLogs = cabinetLogRepository.findAllByCabinetId(cabinetId);
-        List<LockerLog> lockerLogs = lockerLogRepository.findAllByCabinetId(cabinetId);
-        startTime = DateTimeUtil.setDateToUTC(startTime);
-        endTime = DateTimeUtil.setDateToUTC(endTime);
-        List<CabinetLogRow> cabinetLogRows = new ArrayList<>();
-/*        for (CabinetLog cabinetLog : cabinetLogs){
-            if (cabinetLog.getExtCreatedAt() >= startTime && cabinetLog.getExtCreatedAt() <= endTime){
-                CabinetLogRow row = new CabinetLogRow();
-                row.setStatus(cabinetLog.getStatus());
-                row.setTimeStamp(cabinetLog.getExtCreatedAt());
-                cabinetLogRows.add(row);
-            }
-        }*/
-        for (LockerLog log : lockerLogs) {
-            if (log.getExtCreatedAt() == null) {
-                log.setExtCreatedAt(log.getCreatedAt());
-            }
-            if (DateTimeUtil.resetTime(log.getExtCreatedAt()) >= DateTimeUtil.resetTime(startTime) &&
-                    DateTimeUtil.resetTime(log.getExtCreatedAt()) <= DateTimeUtil.resetTime(endTime)) {
-                CabinetLogRow row = new CabinetLogRow();
-                String changedField = "";
-                if (log.getStatus() != null) {
-                    changedField = log.getStatus();
-                }
-                if (log.getStatusMaintenance() != null) {
-                    changedField = log.getStatusMaintenance();
-                }
-                if (log.getStatusTempMode() != null) {
-                    changedField = log.getStatusTempMode();
-                }
-                row.setStatus(changedField);
-                row.setIndex(log.getLocker().getIndex());
-                row.setTimeStamp(log.getExtCreatedAt());
-                if (type != null && Integer.valueOf(log.getLocker().getThermoMode()) == type) {
-                    cabinetLogRows.add(row);
-                } else if (type == null) {
-                    cabinetLogRows.add(row);
-                }
-
-            }
-        }
-        return cabinetLogRows;
-    }
+  
 }
